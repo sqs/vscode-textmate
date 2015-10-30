@@ -300,61 +300,59 @@ function handleCaptures(grammar: Grammar, lineText: string, isFirstLine: boolean
 }
 
 function _tokenizeString(grammar: Grammar, lineText: string, isFirstLine: boolean, linePos: number, stack: StackElement[], lineTokens: LineTokens): void {
-	const lineLength = lineText.length;
-
-	let anchorPosition = -1;
+	let lineLength = lineText.length,
+		stackElement: StackElement,
+		ruleScanner: ICompiledRule,
+		r: IOnigNextMatchResult,
+		matchedRuleId: number,
+		anchorPosition = -1,
+		hasAdvanced: boolean;
 
 	while (linePos < lineLength) {
-		scanNext(); // potentially modifies linePos && anchorPosition
-	}
+		stackElement = stack[stack.length - 1];
 
-	function scanNext() : boolean {
-		let stackElement = stack[stack.length - 1];
+		// try to find a rule in the repository
+		ruleScanner = grammar.getRule(stackElement.ruleId).compile(grammar, stackElement.endRule, isFirstLine, linePos === anchorPosition);
+		r = ruleScanner.scanner._findNextMatchSync(lineText, linePos);
+		var matchRating = r != null ? r.captureIndices[0].start * 2 : Number.MAX_VALUE;
 
-		let captureIndices : IOnigCaptureIndex[] = null;
-		let bestMatchRating = Number.MAX_VALUE; // the smaller the better
-		let matchedRuleId : number;
-
-		// try to match rule: matchRule will set captureIndices, bestMatchRating and matchedRuleId
-		matchRule(stackElement.ruleId);
-		grammar.getInjections(stack).every(injection => matchRule(injection.ruleId, injection.priorityMatch));
-
-		function matchRule(ruleId: number, priorityMatch: boolean = false) : boolean {
-			let ruleScanner = grammar.getRule(ruleId).compile(grammar, stackElement.endRule, isFirstLine, linePos === anchorPosition);
-			let matchResult = ruleScanner.scanner._findNextMatchSync(lineText, linePos);
-			if (matchResult !== null) {
-				let matchRating = matchResult.captureIndices[0].start * 2;
-				if (!priorityMatch) {
-					matchRating++;
+		// check the injections, take the one that matches with the smallest start index
+		var injections = grammar.getInjections(stack);
+		if (injections.length > 0) {
+			injections.forEach(injection => {
+				let irs = grammar.getRule(injection.ruleId).compile(grammar, stackElement.endRule, isFirstLine, linePos === anchorPosition);
+				let ir = irs.scanner._findNextMatchSync(lineText, linePos);
+				if (ir !== null) {
+					var irMatchRating = ir.captureIndices[0].start * 2;
+					if (!injection.priorityMatch) {
+						irMatchRating++;
+					}
+					if (matchRating > irMatchRating) {
+						matchRating = irMatchRating;
+						r = ir;
+						ruleScanner = irs;
+					}
 				}
-
-				if (matchRating < bestMatchRating) {
-					bestMatchRating = matchRating;
-					matchedRuleId = ruleScanner.rules[matchResult.index];
-					captureIndices = matchResult.captureIndices;
-					return bestMatchRating > 0;
-				}
-			}
-			return true;
+			});
 		}
 
-		if (captureIndices === null) {
+		if (r === null) {
 			// No match
 			lineTokens.produce(stack, lineLength);
-			linePos = lineLength;
-			return true;
+			break;
 		}
 
-		let hasAdvanced = (captureIndices[0].end > linePos);
+		matchedRuleId = ruleScanner.rules[r.index];
+		hasAdvanced = (r.captureIndices[0].end > linePos);
 
 		if (matchedRuleId === -1) {
 			// We matched the `end` for this rule => pop it
 			let poppedRule = <BeginEndRule>grammar.getRule(stackElement.ruleId);
 
-			lineTokens.produce(stack, captureIndices[0].start);
+			lineTokens.produce(stack, r.captureIndices[0].start);
 			stackElement.contentName = null;
-			handleCaptures(grammar, lineText, isFirstLine, stack, lineTokens, poppedRule.endCaptures, captureIndices);
-			lineTokens.produce(stack, captureIndices[0].end);
+			handleCaptures(grammar, lineText, isFirstLine, stack, lineTokens, poppedRule.endCaptures, r.captureIndices);
+			lineTokens.produce(stack, r.captureIndices[0].end);
 
 			// pop
 			stack.pop();
@@ -363,29 +361,28 @@ function _tokenizeString(grammar: Grammar, lineText: string, isFirstLine: boolea
 				// Grammar pushed & popped a rule without advancing
 				console.error('Grammar is in an endless loop - case 1');
 				lineTokens.produce(stack, lineLength);
-				linePos = lineLength;
-				return false;
+				break;
 			}
 
 		} else {
 			// We matched a rule!
 			let _rule = grammar.getRule(matchedRuleId);
 
-			lineTokens.produce(stack, captureIndices[0].start);
+			lineTokens.produce(stack, r.captureIndices[0].start);
 
 			// push it on the stack rule
-			stack.push(new StackElement(matchedRuleId, linePos, null, _rule.getName(lineText, captureIndices), null));
+			stack.push(new StackElement(matchedRuleId, linePos, null, _rule.getName(lineText, r.captureIndices), null));
 
 			if (_rule instanceof BeginEndRule) {
 				let pushedRule = <BeginEndRule>_rule;
 
-				handleCaptures(grammar, lineText, isFirstLine, stack, lineTokens, pushedRule.beginCaptures, captureIndices);
-				lineTokens.produce(stack, captureIndices[0].end);
-				anchorPosition = captureIndices[0].end;
-				stack[stack.length-1].contentName = pushedRule.getContentName(lineText, captureIndices);
+				handleCaptures(grammar, lineText, isFirstLine, stack, lineTokens, pushedRule.beginCaptures, r.captureIndices);
+				lineTokens.produce(stack, r.captureIndices[0].end);
+				anchorPosition = r.captureIndices[0].end;
+				stack[stack.length-1].contentName = pushedRule.getContentName(lineText, r.captureIndices);
 
 				if (pushedRule.endHasBackReferences) {
-					stack[stack.length-1].endRule = pushedRule.getEndWithResolvedBackReferences(lineText, captureIndices);
+					stack[stack.length-1].endRule = pushedRule.getEndWithResolvedBackReferences(lineText, r.captureIndices);
 				}
 
 				if (!hasAdvanced && stackElement.ruleId === stack[stack.length - 1].ruleId) {
@@ -393,14 +390,13 @@ function _tokenizeString(grammar: Grammar, lineText: string, isFirstLine: boolea
 					console.error('Grammar is in an endless loop - case 2');
 					stack.pop();
 					lineTokens.produce(stack, lineLength);
-					linePos = lineLength;
-					return false;
+					break;
 				}
 			} else {
 				let matchingRule = <MatchRule>_rule;
 
-				handleCaptures(grammar, lineText, isFirstLine, stack, lineTokens, matchingRule.captures, captureIndices);
-				lineTokens.produce(stack, captureIndices[0].end);
+				handleCaptures(grammar, lineText, isFirstLine, stack, lineTokens, matchingRule.captures, r.captureIndices);
+				lineTokens.produce(stack, r.captureIndices[0].end);
 
 				// pop rule immediately since it is a MatchRule
 				stack.pop();
@@ -412,20 +408,19 @@ function _tokenizeString(grammar: Grammar, lineText: string, isFirstLine: boolea
 						stack.pop();
 					}
 					lineTokens.produce(stack, lineLength);
-					linePos = lineLength;
-					return false;
+					break;
 				}
 			}
 		}
 
-		if (captureIndices[0].end > linePos) {
+		if (r.captureIndices[0].end > linePos) {
 			// Advance stream
-			linePos = captureIndices[0].end;
+			linePos = r.captureIndices[0].end;
 			isFirstLine = false;
 		}
-		return true;
 	}
 }
+
 
 export class StackElement {
 	public ruleId: number;
