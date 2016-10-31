@@ -77,14 +77,14 @@ function getGrammarParser(filePath:string): IGrammarParser {
 	return parsePLISTGrammar;
 }
 
-function parseJSONGrammar(contents:string, filename:string): IRawGrammar {
+export function parseJSONGrammar(contents:string, filename:string): IRawGrammar {
 	if (CAPTURE_METADATA) {
 		return <IRawGrammar>manualParseJSON(contents, filename, true);
 	}
 	return <IRawGrammar>JSON.parse(contents);
 }
 
-function parsePLISTGrammar(contents:string, filename:string): IRawGrammar {
+export function parsePLISTGrammar(contents:string, filename:string): IRawGrammar {
 	if (CAPTURE_METADATA) {
 		return <IRawGrammar>plist.parseWithLocation(contents, filename, '$vscodeTextmateLocation');
 	}
